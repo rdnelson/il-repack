@@ -94,6 +94,16 @@ namespace ILRepacking
             return type;
         }
 
+        private InterfaceImplementation Fix(InterfaceImplementation type)
+        {
+            if (type == null)
+                return type;
+
+            Fix(type.InterfaceType);
+
+            return type;
+        }
+
         internal void FixMethodVisibility(TypeDefinition type)
         {
             foreach (TypeDefinition nested in type.NestedTypes)
@@ -332,12 +342,20 @@ namespace ILRepacking
         {
             if (typeAttribute == null)
                 return false;
-            if (typeAttribute.Interfaces.Any(@interface => @interface.FullName == "java.lang.annotation.Annotation"))
+            if (typeAttribute.Interfaces.Any(@interface => @interface.InterfaceType.FullName == "java.lang.annotation.Annotation"))
                 return true;
             return typeAttribute.BaseType != null && IsAnnotation(typeAttribute.BaseType.Resolve());
         }
 
         private void FixReferences(Collection<TypeReference> refs)
+        {
+            for (int i = 0; i < refs.Count; i++)
+            {
+                refs[i] = Fix(refs[i]);
+            }
+        }
+
+        private void FixReferences(Collection<InterfaceImplementation> refs)
         {
             for (int i = 0; i < refs.Count; i++)
             {

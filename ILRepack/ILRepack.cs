@@ -528,6 +528,11 @@ namespace ILRepacking
             return _mappingHandler.GetRemappedType(reference);
         }
 
+        InterfaceImplementation IRepackContext.GetInterfaceImplFromInterfaceImpl(InterfaceImplementation reference)
+        {
+            return new InterfaceImplementation(_mappingHandler.GetExportedRemappedType(reference.InterfaceType));
+        }
+
         TypeReference IRepackContext.GetExportedTypeFromTypeRef(TypeReference type)
         {
             return _mappingHandler.GetExportedRemappedType(type) ?? type;

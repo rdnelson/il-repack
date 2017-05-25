@@ -96,6 +96,34 @@ namespace ILRepacking
             }
         }
 
+        public InterfaceImplementation Import(InterfaceImplementation reference, IGenericParameterProvider context)
+        {
+            InterfaceImplementation type = _repackContext.GetInterfaceImplFromInterfaceImpl(reference);
+            if (type != null)
+                return type;
+
+            _repackContext.PlatformFixer.FixPlatformVersion(reference.InterfaceType);
+            try
+            {
+                TypeReference typeRef;
+                if (context == null)
+                {
+                    typeRef = _repackContext.TargetAssemblyMainModule.ImportReference(reference.InterfaceType);
+                }
+                else
+                {
+                    typeRef = _repackContext.TargetAssemblyMainModule.ImportReference(reference.InterfaceType, context);
+                }
+
+                return new InterfaceImplementation(typeRef);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                _logger.Error("Problem adding reference: " + reference.InterfaceType.FullName);
+                throw;
+            }
+        }
+
         public FieldReference Import(FieldReference reference, IGenericParameterProvider context)
         {
             _repackContext.PlatformFixer.FixPlatformVersion(reference);
@@ -373,14 +401,13 @@ namespace ILRepacking
             nb.LocalVarToken = body.LocalVarToken;
 
             foreach (VariableDefinition var in body.Variables)
-                nb.Variables.Add(new VariableDefinition(var.Name,
-                    Import(var.VariableType, parent)));
+                nb.Variables.Add(new VariableDefinition(Import(var.VariableType, parent)));
 
             nb.Instructions.SetCapacity(body.Instructions.Count);
             _repackContext.LineIndexer.PreMethodBodyRepack(body, parent);
             foreach (Instruction instr in body.Instructions)
             {
-                _repackContext.LineIndexer.ProcessMethodBodyInstruction(instr);
+                _repackContext.LineIndexer.ProcessMethodBodyInstruction(body, instr);
 
                 Instruction ni;
 
@@ -470,7 +497,8 @@ namespace ILRepacking
                         default:
                             throw new InvalidOperationException();
                     }
-                ni.SequencePoint = instr.SequencePoint;
+                var sequencePoint = body.Method.DebugInformation.GetSequencePoint(ni);
+                nb.Method.DebugInformation.SequencePoints.Add(sequencePoint);
                 nb.Instructions.Add(ni);
             }
             _repackContext.LineIndexer.PostMethodBodyRepack(parent);
@@ -535,7 +563,7 @@ namespace ILRepacking
             // don't copy these twice if UnionMerge==true
             // TODO: we can move this down if we chek for duplicates when adding
             CopySecurityDeclarations(type.SecurityDeclarations, nt.SecurityDeclarations, nt);
-            CopyTypeReferences(type.Interfaces, nt.Interfaces, nt);
+            CopyInterfaceImplementations(type.Interfaces, nt.Interfaces, nt);
             CopyCustomAttributes(type.CustomAttributes, nt.CustomAttributes, nt);
             return nt;
         }
@@ -752,6 +780,14 @@ namespace ILRepacking
             }
             // default is false
             return false;
+        }
+
+        public void CopyInterfaceImplementations(Collection<InterfaceImplementation> input, Collection<InterfaceImplementation> output, IGenericParameterProvider context)
+        {
+            foreach (InterfaceImplementation iface in input)
+            {
+                output.Add(Import(iface, context));
+            }
         }
 
         public void CopyTypeReferences(Collection<TypeReference> input, Collection<TypeReference> output, IGenericParameterProvider context)

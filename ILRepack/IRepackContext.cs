@@ -34,6 +34,7 @@ namespace ILRepacking
 
         TypeDefinition GetMergedTypeFromTypeRef(TypeReference type);
         TypeReference GetExportedTypeFromTypeRef(TypeReference type);
+        InterfaceImplementation GetInterfaceImplFromInterfaceImpl(InterfaceImplementation type);
         IMetadataScope MergeScope(IMetadataScope name);
 
         string FixTypeName(string assemblyName, string typeName);
