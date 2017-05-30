@@ -69,7 +69,7 @@ repack << {
 }
 
 def commonNuspecMetadata = [
-    version: version,
+    version: version + '-beta1',
     title: 'ILRepack - Open-source alternative to ILMerge',
     authors: 'Francois Valdy',
     owners: 'Francois Valdy',

@@ -27,6 +27,7 @@ using ILRepacking.Mixins;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Diagnostics;
 using ILRepacking.Steps.SourceServerData;
+using Mono.Cecil.Cil;
 
 namespace ILRepacking
 {
@@ -337,10 +338,16 @@ namespace ILRepacking
                     step.Perform();
                 }
 
+                for (int i = 0; i < MergedAssemblies.Count; ++i)
+                {
+                    MergedAssemblies[i].Dispose();
+                }
+
                 var parameters = new WriterParameters
                 {
                     StrongNameKeyPair = signingStep.KeyPair,
-                    WriteSymbols = Options.DebugInfo
+                    WriteSymbols = Options.DebugInfo && PrimaryAssemblyMainModule.SymbolReader != null,
+                    SymbolWriterProvider = PrimaryAssemblyMainModule.SymbolReader != null ? new DefaultSymbolWriterProvider(PrimaryAssemblyMainModule.SymbolReader) : null,
                 };
                 // create output directory if it does not exist
                 var outputDir = Path.GetDirectoryName(Options.OutputFile);
@@ -530,7 +537,8 @@ namespace ILRepacking
 
         InterfaceImplementation IRepackContext.GetInterfaceImplFromInterfaceImpl(InterfaceImplementation reference)
         {
-            return new InterfaceImplementation(_mappingHandler.GetExportedRemappedType(reference.InterfaceType));
+            TypeReference typeReference = _mappingHandler.GetRemappedType(reference.InterfaceType);
+            return typeReference != null ? new InterfaceImplementation(typeReference) : null;
         }
 
         TypeReference IRepackContext.GetExportedTypeFromTypeRef(TypeReference type)
