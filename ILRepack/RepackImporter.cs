@@ -30,6 +30,7 @@ namespace ILRepacking
         private readonly IRepackContext _repackContext;
         private readonly RepackOptions _options;
         private readonly Dictionary<AssemblyDefinition, int> _aspOffsets;
+        private readonly Dictionary<ImportDebugInformation, ImportDebugInformation> _importMapping = new Dictionary<ImportDebugInformation, ImportDebugInformation>();
 
         public RepackImporter(
             ILogger logger,
@@ -582,6 +583,185 @@ namespace ILRepacking
 
                 nb.ExceptionHandlers.Add(neh);
             }
+
+            ConvertCustomDebugInformations(body, nb, body.Method, nb.Method);
+
+            var debugInformation = body.Method.DebugInformation;
+            ConvertCustomDebugInformations(body, nb, body.Method.DebugInformation, nb.Method.DebugInformation);
+
+            if (debugInformation.HasSequencePoints)
+            {
+                foreach (var sequencePoint in debugInformation.SequencePoints)
+                {
+                    var instruction = GetInstruction(body, nb, sequencePoint.Offset);
+                    if (instruction != null)
+                    {
+                        var newSequencePoint = new SequencePoint(instruction, sequencePoint.Document);
+                        newSequencePoint.StartLine = sequencePoint.StartLine;
+                        newSequencePoint.StartColumn = sequencePoint.StartColumn;
+                        newSequencePoint.EndLine = sequencePoint.EndLine;
+                        newSequencePoint.EndColumn = sequencePoint.EndColumn;
+                        nb.Method.DebugInformation.SequencePoints.Add(newSequencePoint);
+                    }
+                }
+            }
+
+            if (debugInformation.Scope != null)
+            {
+                nb.Method.DebugInformation.Scope = ConvertScope(body, nb, parent, debugInformation.Scope);
+            }
+
+            if (debugInformation.StateMachineKickOffMethod != null)
+            {
+                nb.Method.DebugInformation.StateMachineKickOffMethod = debugInformation.StateMachineKickOffMethod;
+            }
+        }
+
+        private static void ConvertCustomDebugInformations(MethodBody body, MethodBody nb, ICustomDebugInformationProvider debugInformation, ICustomDebugInformationProvider newDebugInformation)
+        {
+            if (debugInformation.HasCustomDebugInformations)
+            {
+                foreach (var customDebugInformation in debugInformation.CustomDebugInformations)
+                {
+                    CustomDebugInformation newCustomDebugInformation = null;
+                    if (customDebugInformation is AsyncMethodBodyDebugInformation)
+                    {
+                        var asyncDebugInformation = (AsyncMethodBodyDebugInformation)customDebugInformation;
+                        var newAsyncDebugInformation = asyncDebugInformation.CatchHandler.Offset != -1
+                            ? new AsyncMethodBodyDebugInformation(GetInstruction(body, nb, asyncDebugInformation.CatchHandler.Offset))
+                            : new AsyncMethodBodyDebugInformation();
+                        foreach (var resume in asyncDebugInformation.Resumes)
+                        {
+                            var resumeInst = GetInstruction(body, nb, resume.Offset);
+                            newAsyncDebugInformation.Resumes.Add(resumeInst != null ? new InstructionOffset(resumeInst) : new InstructionOffset(resume.Offset));
+                        }
+
+                        foreach (var yield in asyncDebugInformation.Yields)
+                        {
+                            var yieldInst = GetInstruction(body, nb, yield.Offset);
+                            newAsyncDebugInformation.Yields.Add(yieldInst != null ? new InstructionOffset(yieldInst) : new InstructionOffset(yield.Offset));
+                        }
+
+                        newAsyncDebugInformation.ResumeMethods.Clear();
+                        foreach (var method in asyncDebugInformation.ResumeMethods)
+                        {
+                            newAsyncDebugInformation.ResumeMethods.Add(method);
+                        }
+
+                        newCustomDebugInformation = newAsyncDebugInformation;
+                    }
+                    else if (customDebugInformation is BinaryCustomDebugInformation)
+                    {
+                        var binaryDebugInformation = (BinaryCustomDebugInformation)customDebugInformation;
+                        newCustomDebugInformation = new BinaryCustomDebugInformation(binaryDebugInformation.Identifier, binaryDebugInformation.Data);
+                    }
+                    else if (customDebugInformation is StateMachineScopeDebugInformation)
+                    {
+                        var stateMachineDebugInformation = (StateMachineScopeDebugInformation)customDebugInformation;
+
+                        var newStateMachineDebugInformation = new StateMachineScopeDebugInformation();
+
+                        foreach (var scope in stateMachineDebugInformation.Scopes)
+                        {
+                            var startInstr = GetInstruction(body, nb, scope.Start.Offset);
+                            var endInstr = GetInstruction(body, nb, scope.End.Offset);
+
+                            if (startInstr != null)
+                            {
+                                newStateMachineDebugInformation.Scopes.Add(new StateMachineScope(startInstr, endInstr));
+                            }
+                            else
+                            {
+                                newStateMachineDebugInformation.Scopes.Add(scope);
+                            }
+                        }
+
+                        newCustomDebugInformation = newStateMachineDebugInformation;
+                    }
+
+                    if (newCustomDebugInformation != null)
+                    {
+                        ConvertCustomDebugInformations(body, nb, customDebugInformation, newCustomDebugInformation);
+                        newDebugInformation.CustomDebugInformations.Add(newCustomDebugInformation);
+                    }
+                }
+            }
+        }
+
+        private ScopeDebugInformation ConvertScope(MethodBody body, MethodBody nb, MethodDefinition parent, ScopeDebugInformation scope)
+        {
+            var newScope = new ScopeDebugInformation(GetInstruction(body, nb, scope.Start.Offset), scope.End.IsEndOfMethod ? null : GetInstruction(body, nb, scope.End.Offset));
+
+            ConvertCustomDebugInformations(body, nb, scope, newScope);
+
+            if (scope.Import != null)
+            {
+                var import = scope.Import;
+                newScope.Import = ConvertImport(body, nb, parent, import);
+            }
+
+            // Process constants
+            if (scope.HasConstants)
+            {
+                foreach (var constant in scope.Constants)
+                {
+                    var newConstant = new ConstantDebugInformation(constant.Name, constant.ConstantType != null ? Import(constant.ConstantType, parent) : null, constant.Value);
+                    ConvertCustomDebugInformations(body, nb, constant, newConstant);
+                    newScope.Constants.Add(newConstant);
+                }
+            }
+
+            // Process variables
+            if (scope.HasVariables)
+            {
+                foreach (var variable in scope.Variables)
+                {
+                    var newVariable = new VariableDebugInformation(body.Variables[variable.Index], variable.Name)
+                    {
+                        Attributes = variable.Attributes,
+                        IsDebuggerHidden = variable.IsDebuggerHidden
+                    };
+                    ConvertCustomDebugInformations(body, nb, variable, newVariable);
+                    newScope.Variables.Add(newVariable);
+                }
+            }
+
+            // Process inner scopes
+            if (scope.HasScopes)
+            {
+                foreach (var innerScope in scope.Scopes)
+                {
+                    newScope.Scopes.Add(ConvertScope(body, nb, parent, innerScope));
+                }
+            }
+
+            return newScope;
+        }
+
+        private ImportDebugInformation ConvertImport(MethodBody body, MethodBody nb, MethodDefinition parent, ImportDebugInformation import)
+        {
+            ImportDebugInformation newImport;
+            if (!_importMapping.TryGetValue(import, out newImport))
+            {
+                _importMapping.Add(import, newImport = new ImportDebugInformation());
+                foreach (var target in import.Targets)
+                {
+                    newImport.Targets.Add(new ImportTarget(target.Kind)
+                    {
+                        Alias = target.Alias,
+                        Namespace = target.Namespace,
+                        AssemblyReference = target.AssemblyReference,
+                        Type = target.Type != null ? Import(target.Type, parent) : null,
+                    });
+                }
+
+                ConvertCustomDebugInformations(body, nb, import, newImport);
+
+                if (import.Parent != null)
+                    newImport.Parent = ConvertImport(body, nb, parent, import.Parent);
+            }
+
+            return newImport;
         }
 
         private TypeDefinition CreateType(TypeDefinition type, Collection<TypeDefinition> col, bool internalize, string rename)
@@ -672,6 +852,33 @@ namespace ILRepacking
                 return newBody.Instructions[pos];
 
             return null /*newBody.Instructions.Outside*/;
+        }
+
+        private static Instruction GetInstruction(MethodBody oldBody, MethodBody newBody, int offset)
+        {
+            var size = oldBody.Instructions.Count;
+            var items = oldBody.Instructions;
+            if (offset < 0 || offset > items[size - 1].Offset)
+                return null;
+
+            int min = 0;
+            int max = size - 1;
+            while (min <= max)
+            {
+                int mid = min + ((max - min) / 2);
+                var instruction = items[mid];
+                var instruction_offset = instruction.Offset;
+
+                if (offset == instruction_offset)
+                    return GetInstruction(oldBody, newBody, instruction);
+
+                if (offset < instruction_offset)
+                    max = mid - 1;
+                else
+                    min = mid + 1;
+            }
+
+            return null;
         }
 
         private bool DuplicateTypeAllowed(TypeDefinition type)

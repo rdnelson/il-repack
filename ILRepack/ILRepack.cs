@@ -345,6 +345,11 @@ namespace ILRepacking
                     step.Perform();
                 }
                 
+                for (int i = 0; i < MergedAssemblies.Count; ++i)
+                {
+                    MergedAssemblies[i].Dispose();
+                }
+
                 var parameters = new WriterParameters
                 {
                     StrongNameKeyPair = signingStep.KeyPair,

@@ -59,9 +59,9 @@ namespace ILRepacking
             return field;
         }
 
-        private TypeReference Fix(TypeReference type)
+        private TypeReference Fix(TypeReference type, bool unresolvedDefintion = false)
         {
-            if (type == null || type.IsDefinition)
+            if (type == null || (type.IsDefinition && !unresolvedDefintion))
                 return type;
 
             if (type.IsGenericParameter)
@@ -260,6 +260,10 @@ namespace ILRepacking
             FixReferences(meth.MethodReturnType.CustomAttributes);
             if (meth.HasBody)
                 FixReferences(meth.Body);
+
+            FixReferencesCustomDebugInformations(meth.DebugInformation);
+            if (meth.DebugInformation != null)
+                FixReferences(meth.DebugInformation);
         }
 
         private void FixReferences(MethodBody body)
@@ -422,15 +426,15 @@ namespace ILRepacking
             return imported_instance;
         }
 
-        internal MethodReference Fix(MethodReference method)
+        internal MethodReference Fix(MethodReference method, bool unresolvedDefintion = false)
         {
-            TypeReference declaringType = Fix(method.DeclaringType);
+            TypeReference declaringType = Fix(method.DeclaringType, unresolvedDefintion);
             if (method.IsGenericInstance)
             {
                 return Fix((GenericInstanceMethod)method);
             }
             // if declaring type is in our new merged module, return the definition
-            if (declaringType.IsDefinition && !method.IsDefinition)
+            if (declaringType.IsDefinition && (!method.IsDefinition || unresolvedDefintion))
             {
                 MethodDefinition def = new ReflectionHelper(_repackContext).FindMethodDefinitionInType((TypeDefinition)declaringType, method);
                 if (def != null)
@@ -591,6 +595,86 @@ namespace ILRepacking
             MethodDefinition @base = MethodMatcher.MapVirtualMethodToDeepestBase(meth);
             if (@base != null && @base.IsVirtual)
                 Fix(@base, meth);
+        }
+
+        private void FixReferences(MethodDebugInformation debugInformation)
+        {
+            FixReferencesCustomDebugInformations(debugInformation);
+
+            if (debugInformation.StateMachineKickOffMethod != null)
+                debugInformation.StateMachineKickOffMethod = (MethodDefinition)Fix(debugInformation.StateMachineKickOffMethod, true);
+
+            if (debugInformation.Scope != null)
+            {
+                FixReferences(debugInformation.Scope);
+            }
+        }
+
+        private void FixReferences(ScopeDebugInformation scope)
+        {
+            FixReferencesCustomDebugInformations(scope);
+
+            if (scope.Import != null)
+                FixReferences(scope.Import);
+
+            if (scope.HasScopes)
+            {
+                foreach (var innerScope in scope.Scopes)
+                    FixReferences(innerScope);
+            }
+
+            if (scope.HasScopes)
+            {
+                foreach (var constant in scope.Constants)
+                {
+                    FixReferencesCustomDebugInformations(constant);
+                    constant.ConstantType = Fix(constant.ConstantType);
+                }
+            }
+
+            if (scope.HasVariables)
+            {
+                foreach (var variable in scope.Variables)
+                    FixReferencesCustomDebugInformations(variable);
+            }
+        }
+
+        private void FixReferences(ImportDebugInformation import)
+        {
+            FixReferencesCustomDebugInformations(import);
+
+            foreach (var target in import.Targets)
+            {
+                target.Type = Fix(target.Type);
+                if (target.AssemblyReference != null)
+                    target.AssemblyReference = (AssemblyNameReference)_repackContext.MergeScope(target.AssemblyReference);
+            }
+        }
+
+        private void FixReferencesCustomDebugInformations(ICustomDebugInformationProvider debugInformation)
+        {
+            if (debugInformation.HasCustomDebugInformations)
+            {
+                foreach (var customDebugInformation in debugInformation.CustomDebugInformations)
+                {
+                    if (customDebugInformation is AsyncMethodBodyDebugInformation)
+                    {
+                        var asyncDebugInformation = (AsyncMethodBodyDebugInformation)customDebugInformation;
+                        if (asyncDebugInformation.ResumeMethods != null)
+                        {
+                            var fixedMethods = asyncDebugInformation.ResumeMethods.Select(rm => Fix(rm, true).Resolve()).ToArray();
+                            asyncDebugInformation.ResumeMethods.Clear();
+
+                            foreach (var method in fixedMethods)
+                            {
+                                asyncDebugInformation.ResumeMethods.Add(method);
+                            }
+                        }
+                    }
+
+                    FixReferencesCustomDebugInformations(customDebugInformation);
+                }
+            }
         }
     }
 }
